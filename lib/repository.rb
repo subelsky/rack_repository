@@ -40,9 +40,9 @@ module Rack
           FileUtils.mv(source_path,dest_path)
           [ 200, { 'Content-Type' => 'text/html' }, "Saved #{dest_path}" ]
         end
-      rescue StandardError
-        return forbidden("Cannot save #{path} due to #{$!.message}")
       end
+    rescue StandardError
+      return forbidden("Cannot save '#{params['path']}' due to #{$!.message}")
     end
   
     def send_file(params,env)
@@ -51,6 +51,8 @@ module Rack
           send_file_response(path)
         end
       end
+    rescue StandardError
+      return forbidden("Cannot send '#{params['path']}' due to #{$!.message}")
     end
 
     def send_file_response(path)
@@ -100,12 +102,7 @@ module Rack
       # can't use File.dirname here as it only uses Unix separator
       path_parts = path.split(File::SEPARATOR)
       dir_name = path_parts.join(a[0..-2])
-
-      begin
-        File.mkdir_p(dir_name)
-      rescue StandardError
-        return forbidden("Cannot create directory #{dir_name} due to #{$!.message}")
-      end
+      File.mkdir_p(dir_name)
       
       return forbidden("Cannot write to #{path}") unless ::File.writable?(path)
 
