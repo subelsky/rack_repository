@@ -34,24 +34,22 @@ module Rack
     # some file sending/receiving code adapted from Rack::File
 
     def receive_file(params,env)
-      with_sanitized_path(params['path']) do |path|
-        return forbidden("#{path} does not exist") unless ::File.exist?(path)
-        return forbidden("Cannot write to #{path}") unless ::File.writable?(path)
-
-        source_path = params['file'][:tempfile].path
-        destination_filename = ::File.basename(Utils.unescape(params['file'][:filename]))
-        destination_path = ::File.join(path, destination_filename)
-      
-        FileUtils.mv(source_path,destination_path)
-        [ 200, { 'Content-Type' => 'text/html' }, "Saved #{destination_path}" ]
+      with_sanitized_path(params['path']) do |sanitized_path|        
+        with_writeable_path(sanitized_path) do |dest_path|
+          source_path = params['file'][:tempfile].path
+          FileUtils.mv(source_path,dest_path)
+          [ 200, { 'Content-Type' => 'text/html' }, "Saved #{dest_path}" ]
+        end
+      rescue StandardError
+        return forbidden("Cannot save #{path} due to #{$!.message}")
       end
     end
   
     def send_file(params,env)
-      with_sanitized_path(params['path']) do |path|
-        return not_found(path) unless ::File.file?(path)
-        return forbidden("Cannot read #{path}") unless ::File.readable?(path)
-        send_file_response(path)
+      with_sanitized_path(params['path']) do |sanitized_path|
+        with_readable_path(sanitized_path) do |path|
+          send_file_response(path)
+        end
       end
     end
 
@@ -75,6 +73,12 @@ module Rack
       }, body]
     end
 
+    def with_readable_path(path)
+      return not_found(path) unless ::File.file?(path)
+      return forbidden("Cannot read #{path}") unless ::File.readable?(path)      
+      yield path
+    end
+    
     def with_sanitized_path(orig_path)
       path = Utils.unescape(orig_path)
       return forbidden("Illegal path #{path}") if path.include?("..")
@@ -90,6 +94,22 @@ module Rack
     def forbidden(body)
       body += "\n" unless body =~ /\n$/
       [403, {"Content-Type" => "text/plain", "Content-Length" => body.size.to_s},[body]]
+    end
+        
+    def with_writeable_path(path)      
+      # can't use File.dirname here as it only uses Unix separator
+      path_parts = path.split(File::SEPARATOR)
+      dir_name = path_parts.join(a[0..-2])
+
+      begin
+        File.mkdir_p(dir_name)
+      rescue StandardError
+        return forbidden("Cannot create directory #{dir_name} due to #{$!.message}")
+      end
+      
+      return forbidden("Cannot write to #{path}") unless ::File.writable?(path)
+
+      yield path
     end
 
   end
