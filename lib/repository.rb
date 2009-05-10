@@ -20,9 +20,11 @@ module Rack
             
       if params['path']
         if params['file']
-          receive_file(params,env)
+          receive_file(params)
+        elsif params['destroy']
+          destroy_file(params)
         else
-          send_file(params,env)
+          send_file(params)
         end
       else
         [@status, @headers, @body]
@@ -33,19 +35,45 @@ module Rack
 
     # some file sending/receiving code adapted from Rack::File
 
-    def receive_file(params,env)
+    def destroy_file
       with_sanitized_path(params['path']) do |sanitized_path|        
-        with_writeable_path(sanitized_path) do |dest_path|
-          source_path = params['file'][:tempfile].path
-          FileUtils.mv(source_path,dest_path)
-          [ 200, { 'Content-Type' => 'text/html' }, "Saved #{dest_path}" ]
+        with_modifiable_path(sanitized_path) do |dest_path|
+          
+        end
+      end
+    end
+    
+    def receive_file(params)
+      with_sanitized_path(params['path']) do |sanitized_path|        
+        with_modifiable_path(sanitized_path) do |dest_path|
+          write_to_file(params,dest_path)
         end
       end
     rescue StandardError
       return forbidden("Cannot save '#{params['path']}' due to #{$!.message}")
     end
   
-    def send_file(params,env)
+    def write_to_file(params,dest_path)
+      # if they sent us a file, then we do something with it, otherwise it was just a touch
+      if params['file'][:tempfile]
+        source_path = params['file'][:tempfile].path
+
+        if params['append']
+          File.open(dest_path,'a') do |dest_file|
+            File.open(source_path,'r') do |source_file|
+              FileUtils.copy_stream(source_file,dest_file)
+            end
+          end
+        else
+          FileUtils.mv(source_path,dest_path)
+          msg = "Saved #{dest_path}"
+        end
+      end
+
+      [ 200, { 'Content-Type' => 'text/html' }, "Saved #{dest_path}" ]
+    end
+    
+    def send_file(params)
       with_sanitized_path(params['path']) do |sanitized_path|
         with_readable_path(sanitized_path) do |path|
           send_file_response(path)
@@ -98,15 +126,16 @@ module Rack
       [403, {"Content-Type" => "text/plain", "Content-Length" => body.size.to_s},[body]]
     end
         
-    def with_writeable_path(path)      
+    def with_modifiable_path(path)      
       # can't use File.dirname here as it only uses Unix separator
       path_parts = path.split(File::SEPARATOR)
       dir_name = path_parts.join(a[0..-2])
       File.mkdir_p(dir_name)
-      
-      return forbidden("Cannot write to #{path}") unless ::File.writable?(path)
-
+      # TODO STILL DO A WRITE CHECK HERE!!
+      FileUtils.touch(path)
       yield path
+    rescue Errno::EACCES
+      return forbidden("Cannot write to #{path} due to #{$!.message}")
     end
 
   end
