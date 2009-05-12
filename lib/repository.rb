@@ -6,83 +6,146 @@ require 'rack/request'
 require 'rack/utils'
 require 'rack/file'
 
+# Sends and modifies files in the local file system. Uses Rack::File to transfer the file, which makes this
+# work with rack/sendfile and other middleware. Some code originally adapted from Rack::File.
+
 module Rack
   class Repository
+
+    # If we aren't initialized with a root directory to store our files, assume it's the local directory of this file
     
-    def initialize(app,root_dir = nil)
-      @app = app
+    def initialize(root_dir = nil)
       @root_dir ||= ::File.expand_path(::File.dirname(__FILE__))
     end
 
+    # Accepts the following commands
+    #
+    # GET /foo/bar/blah&action=send
+    # - send blah back to the client
+    # 
+    # POST /foo/bar/blah with "action=send" body parameter
+    # - send contents of blah back to the client (defeats caching)
+    # 
+    # POST to /foo/bar/blah with "action=save" and "file" body parameters
+    # - create a file named "blah" with contents  of file  OR overwrite "blah" with contents of file; create /foo/bar if needed
+    # 
+    # POST to /foo/bar/blah with "action=touch" body parameter
+    # - create an empty file named "blah" OR update the timestamp of blah; create /foo/bar if needed
+    # 
+    # POST to /foo/bar/blah with "action=makedir" body parameter
+    # - create a directory named "blah" and create parent directories if needed
+    # 
+    # POST to /foo/bar/blah with "action=append" and "file" body parameters
+    # - append the contents of the file body parameter to the blah file; return error if "blah" doesn't exist
+    # 
+    # POST to /foo/bar/blah with "action=delete" body parameter
+    # - delete a file or directory named "blah"
+
     def call(env)
-      @status, @headers, @body = @app.call(env)
       params = Request.new(env).params
-            
-      if params['path']
-        if params['file']
-          receive_file(params)
-        elsif params['destroy']
-          destroy_file(params)
-        else
-          send_file(params)
-        end
+      path = env["PATH_INFO"]
+      action = params['action']
+      
+      case action
+      when nil
+        forbidden("You must specify an action")
+      when 'send'
+        send_file(path)
+      when 'save'
+        save_file(path,params)
+      when 'append'
+        append_to_file(path,params)
+      when 'touch'
+        touch_file(path)
+      when 'makedir'
+        make_directory(path)
+      when 'delete'
+        destroy_file(path)
       else
-        [@status, @headers, @body]
+        forbidden("Unknown action #{params['action']}")
       end
+    rescue StandardError
+      return forbidden("Cannot #{action} '#{original_path}' due to #{$!.message}")
     end
 
     private
 
-    # some file sending/receiving code adapted from Rack::File
+    def send_file(original_path)
+      with_sanitized_path(original_path) do |sanitized_path|
+        with_readable_path(sanitized_path) do |readable_path|
+          send_file_response(readable_path)
+        end
+      end
+    end
 
-    def destroy_file
-      with_sanitized_path(params['path']) do |sanitized_path|        
+    def save_file(original_path,params)
+      with_sanitized_path(original_path) do |sanitized_path|        
         with_modifiable_path(sanitized_path) do |dest_path|
+          save_to_file(dest_path,params)
+        end
+      end
+    end
+
+    def append_to_file(path,params)
+      with_sanitized_path(original_path) do |sanitized_path|        
+        with_modifiable_path(sanitized_path) do |dest_path|
+          append_to_file(dest_path,params)
+        end
+      end
+    end
+    
+    def touch_file(original_path,params)
+      with_sanitized_path(original_path) do |sanitized_path|        
+        with_modifiable_path(sanitized_path) do |dest_path|
+          FileUtils.touch(dest_path)
+          success("Touched #{original_path}")
+        end
+      end
+    end
+
+    def make_directory(original_path)
+      with_sanitized_path(original_path) do |sanitized_path|        
+        with_modifiable_path(sanitized_path) do |dest_path|
+          FileUtils.mkdir(dest_path) # with_modifiable_path call takes care of any parent directories
+          success("Created directory #{original_path}")
+        end
+      end
+    end
+    
+    def destroy_file(original_path)
+      with_sanitized_path(original_path) do |sanitized_path|        
+        with_modifiable_path(sanitized_path) do |destroy_path|
+          return forbidden("Cannot modify #{destroy_path}") unless File.writable?(destroy_path)
           
         end
       end
     end
-    
-    def receive_file(params)
-      with_sanitized_path(params['path']) do |sanitized_path|        
-        with_modifiable_path(sanitized_path) do |dest_path|
-          write_to_file(params,dest_path)
-        end
+      
+    def save_to_file(dest_path,params)
+      with_tempfile_path(params['file']) do |tempfile_path|
+        FileUtils.mv(tempfile_path,dest_path)
+        success("Saved #{dest_path}")
       end
-    rescue StandardError
-      return forbidden("Cannot save '#{params['path']}' due to #{$!.message}")
     end
-  
-    def write_to_file(params,dest_path)
-      # if they sent us a file, then we do something with it, otherwise it was just a touch
-      if params['file'][:tempfile]
-        source_path = params['file'][:tempfile].path
 
-        if params['append']
-          File.open(dest_path,'a') do |dest_file|
-            File.open(source_path,'r') do |source_file|
-              FileUtils.copy_stream(source_file,dest_file)
-            end
+    def append_to_file(dest_path,params)
+      with_tempfile_path(params['file']) do |tempfile_path|
+        File.open(dest_path,'a') do |dest_file|
+          File.open(tempfile_path,'r') do |source_file|
+            FileUtils.copy_stream(source_file,dest_file)
           end
-        else
-          FileUtils.mv(source_path,dest_path)
-          msg = "Saved #{dest_path}"
         end
-      end
+        success("Appended to #{dest_path}")
+      end      
+    end
 
-      [ 200, { 'Content-Type' => 'text/html' }, "Saved #{dest_path}" ]
+    def with_tempfile_path(file_param)
+      return forbidden("Did not receive a file") unless file_param
+      tempfile = file_param[:tempfile]
+      return forbidden("File was not uploaded") unless tempfile  
+      return tempfile.path
     end
     
-    def send_file(params)
-      with_sanitized_path(params['path']) do |sanitized_path|
-        with_readable_path(sanitized_path) do |path|
-          send_file_response(path)
-        end
-      end
-    rescue StandardError
-      return forbidden("Cannot send '#{params['path']}' due to #{$!.message}")
-    end
-
     def send_file_response(path)
       if size = ::File.size?(path)
         # use Rack::File so streaming works and for max compatibility with other handlers
@@ -125,19 +188,26 @@ module Rack
       body += "\n" unless body =~ /\n$/
       [403, {"Content-Type" => "text/plain", "Content-Length" => body.size.to_s},[body]]
     end
-        
-    def with_modifiable_path(path)      
-      # can't use File.dirname here as it only uses Unix separator
-      path_parts = path.split(File::SEPARATOR)
-      dir_name = path_parts.join(a[0..-2])
-      File.mkdir_p(dir_name)
-      # TODO STILL DO A WRITE CHECK HERE!!
-      FileUtils.touch(path)
-      yield path
-    rescue Errno::EACCES
-      return forbidden("Cannot write to #{path} due to #{$!.message}")
-    end
 
+    def success(msg)
+      [ 200, { 'Content-Type' => 'text/html' }, msg ]
+    end
+    
+    def with_modifiable_path(path)      
+      # can't use File.dirname here as it only recognizes Unix separators
+      path_parts = path.split(File::SEPARATOR)
+      dir_name = File.join(path_parts[0..-2])
+
+      begin
+        File.mkdir_p(dir_name)
+      rescue Errno::EACCES
+        return forbidden("Cannot create directory #{dir_name} due to #{$!.message}")
+      end
+
+      return forbidden("Cannot write to #{path}") unless File.writable?(path)
+      yield path
+    end
+    
   end
 end
 
