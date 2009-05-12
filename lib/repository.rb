@@ -15,7 +15,7 @@ module Rack
     # If we aren't initialized with a root directory to store our files, assume it's the local directory of this file
     
     def initialize(root_dir = nil)
-      @root_dir ||= ::File.expand_path(::File.dirname(__FILE__))
+      @root_dir ||= ::File.expand_path(::File.join(::File.dirname(__FILE__),'..','example'))
     end
 
     # Accepts the following commands
@@ -38,11 +38,12 @@ module Rack
     # POST to /foo/bar/blah with "action=append" and "file" body parameters
     # - append the contents of the file body parameter to the blah file; return error if "blah" doesn't exist
     # 
-    # POST to /foo/bar/blah with "action=delete" body parameter
-    # - delete a file or directory named "blah"
+    # POST to /foo/bar/blah with "action=remove" body parameter
+    # - delete a file or directory named "blah"; will fail if directory is not empty
 
     def call(env)
       params = Request.new(env).params
+
       path = env["PATH_INFO"]
       action = params['action']
       
@@ -54,18 +55,18 @@ module Rack
       when 'save'
         save_file(path,params)
       when 'append'
-        append_to_file(path,params)
+        append_file(path,params)
       when 'touch'
         touch_file(path)
       when 'makedir'
         make_directory(path)
-      when 'delete'
-        destroy_file(path)
+      when 'remove'
+        remove_path(path)
       else
         forbidden("Unknown action #{params['action']}")
       end
     rescue StandardError
-      return forbidden("Cannot #{action} '#{original_path}' due to #{$!.message}")
+      return forbidden("Cannot #{action} #{path} due to #{$!.message}")
     end
 
     private
@@ -82,19 +83,21 @@ module Rack
       with_sanitized_path(original_path) do |sanitized_path|        
         with_modifiable_path(sanitized_path) do |dest_path|
           save_to_file(dest_path,params)
+          success("Saved #{dest_path}")
         end
       end
     end
 
-    def append_to_file(path,params)
+    def append_file(original_path,params)
       with_sanitized_path(original_path) do |sanitized_path|        
         with_modifiable_path(sanitized_path) do |dest_path|
           append_to_file(dest_path,params)
+          success("Appended to #{dest_path}")
         end
       end
     end
     
-    def touch_file(original_path,params)
+    def touch_file(original_path)
       with_sanitized_path(original_path) do |sanitized_path|        
         with_modifiable_path(sanitized_path) do |dest_path|
           FileUtils.touch(dest_path)
@@ -111,31 +114,37 @@ module Rack
         end
       end
     end
+
+    # will raise SystemCallError if the path to be removed is a non-empty directory
     
-    def destroy_file(original_path)
-      with_sanitized_path(original_path) do |sanitized_path|        
-        with_modifiable_path(sanitized_path) do |destroy_path|
-          return forbidden("Cannot modify #{destroy_path}") unless File.writable?(destroy_path)
-          
+    def remove_path(original_path)
+      with_sanitized_path(original_path) do |destroy_path|
+        return not_found(original_path) unless ::File.exist?(destroy_path)
+        return forbidden("Cannot modify #{destroy_path}") unless ::File.writable?(destroy_path)
+        if ::File.directory?(destroy_path)
+          Dir.rmdir(destroy_path)
+          success("Removed directory #{destroy_path}")
+        else
+          ::File.delete(destroy_path)
+          success("Removed file #{destroy_path}")
         end
       end
     end
       
     def save_to_file(dest_path,params)
       with_tempfile_path(params['file']) do |tempfile_path|
+        puts "moving #{tempfile_path} to #{dest_path}"
         FileUtils.mv(tempfile_path,dest_path)
-        success("Saved #{dest_path}")
       end
     end
 
     def append_to_file(dest_path,params)
       with_tempfile_path(params['file']) do |tempfile_path|
-        File.open(dest_path,'a') do |dest_file|
-          File.open(tempfile_path,'r') do |source_file|
+        ::File.open(dest_path,'a') do |dest_file|
+          ::File.open(tempfile_path,'r') do |source_file|
             FileUtils.copy_stream(source_file,dest_file)
           end
         end
-        success("Appended to #{dest_path}")
       end      
     end
 
@@ -143,7 +152,7 @@ module Rack
       return forbidden("Did not receive a file") unless file_param
       tempfile = file_param[:tempfile]
       return forbidden("File was not uploaded") unless tempfile  
-      return tempfile.path
+      yield tempfile.path
     end
     
     def send_file_response(path)
@@ -180,7 +189,7 @@ module Rack
     end
 
     def not_found(path)
-      body = "File not found: #{path}\n"
+      body = "Path not found: #{path}\n"
       [404, {"Content-Type" => "text/plain", "Content-Length" => body.size.to_s},[body] ]
     end
     
@@ -195,16 +204,21 @@ module Rack
     
     def with_modifiable_path(path)      
       # can't use File.dirname here as it only recognizes Unix separators
-      path_parts = path.split(File::SEPARATOR)
-      dir_name = File.join(path_parts[0..-2])
+      path_parts = path.split(::File::SEPARATOR)
+      dir_name = ::File.join(path_parts[0..-2])
 
       begin
-        File.mkdir_p(dir_name)
+        FileUtils.mkdir_p(dir_name)
       rescue Errno::EACCES
         return forbidden("Cannot create directory #{dir_name} due to #{$!.message}")
       end
 
-      return forbidden("Cannot write to #{path}") unless File.writable?(path)
+      return forbidden("Cannot write to directory #{dir_name}") unless ::File.writable?(dir_name)
+
+      if ::File.file?(path) && !::File.writable?(path)
+        return forbidden("Cannot write to file #{path}")
+      end
+      
       yield path
     end
     
@@ -214,5 +228,5 @@ end
 if $0 == __FILE__
   require 'rack/showexceptions'
   app = lambda { [200,{ 'Content-Type' => 'text/plain' },''] }
-  Rack::Handler::WEBrick.run(Rack::ShowExceptions.new(Rack::Lint.new(Rack::Repository.new(app))),:Port => 3000)
+  Rack::Handler::WEBrick.run(Rack::ShowExceptions.new(Rack::Repository.new),:Port => 3000)
 end
