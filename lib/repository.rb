@@ -15,7 +15,7 @@ module Rack
     # If we aren't initialized with a root directory to store our files, assume it's the local directory of this file
     
     def initialize(root_dir = nil)
-      @root_dir ||= ::File.expand_path(::File.join(::File.dirname(__FILE__),'..','example'))
+      @root_dir ||= ::File.join(::File.expand_path(::File.dirname(__FILE__)),'example')
     end
 
     # Accepts the following commands
