@@ -8,6 +8,19 @@ require 'rack/file'
 
 # Sends and modifies files in the local file system. Uses Rack::File to transfer the file, which makes this
 # work with rack/sendfile and other middleware. Some code originally adapted from Rack::File.
+#
+# This file will run as a self-contained app if executed directly.  You can test it by visiting these URLs:
+# http://localhost:3000/test.txt
+# http://localhost:3000/signature.jpg
+# 
+# To test creation and destruction, try commands like the following:
+#
+# curl localhost:3000/foo.jpg -F file=@foo.jpg -F action=save
+# curl localhost:3000/test.txt -F file=@temp.txt -F action=append
+# curl localhost:3000/test.txt -F action=touch
+# curl localhost:3000/newdir -F action=makedir
+# curl localhost:3000/test.txt -F action=remove
+# curl localhost:3000/newdir -F action=remove
 
 module Rack
   class Repository
