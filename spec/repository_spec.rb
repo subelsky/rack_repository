@@ -29,10 +29,6 @@ context "Rack::Repository" do
   end
 
   context "basic request handling" do
-    specify "returns forbidden when called without an action" do
-      new_request.get("/fancy/file.txt").should be_forbidden
-    end
-    
     specify "returns forbidden when called with an empty action" do
       new_request.get("/fancy/file.txt?action=").should be_forbidden
     end
@@ -63,7 +59,7 @@ context "Rack::Repository" do
     
     
     specify "is successful" do
-      new_request.get(@requested_path + "?action=send").should be_ok
+      new_request.get(@requested_path).should be_ok
     end
     
   end

@@ -20,11 +20,11 @@ module Rack
 
     # Accepts the following commands
     #
-    # GET /foo/bar/blah&action=send
+    # GET /foo/bar/blah
     # - send blah back to the client
     # 
-    # POST /foo/bar/blah with "action=send" body parameter
-    # - send contents of blah back to the client (defeats caching)
+    # POST /foo/bar/blah with no "action" body parameter
+    # - also sends contents of blah back to the client (defeats caching)
     # 
     # POST to /foo/bar/blah with "action=save" and "file" body parameters
     # - create a file named "blah" with contents  of file  OR overwrite "blah" with contents of file; create /foo/bar if needed
@@ -49,8 +49,6 @@ module Rack
       
       case action
       when nil
-        forbidden("You must specify an action")
-      when 'send'
         send_file(path)
       when 'save'
         save_file(path,params)
